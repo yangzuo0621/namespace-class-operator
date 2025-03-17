@@ -1,5 +1,5 @@
 ## Append samples of your project ##
 resources:
 - v1_namespaceclass.yaml
-- v1_networking.yaml
+# - v1_networking.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

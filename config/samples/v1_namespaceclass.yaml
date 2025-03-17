@@ -6,4 +6,13 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: namespaceclass-sample
 spec:
-  # TODO(user): Add fields here
+  networking:
+    networkpolicies:
+    - name: test-network-policy
+      spec:
+        podSelector:
+          matchLabels:
+            role: db
+        policyTypes:
+        - Ingress
+        - Egress

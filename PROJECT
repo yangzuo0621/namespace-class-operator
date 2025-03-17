@@ -15,4 +15,12 @@ resources:
   kind: NamespaceClass
   path: akuity.io/namespaceclass/api/v1
   version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: akuity.io
+  kind: Networking
+  path: akuity.io/namespaceclass/api/v1
+  version: v1
 version: "3"

@@ -55,19 +55,102 @@ type NamespaceClassReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
 func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	if req.Namespace != "" {
+		return r.HandleForNamespaceChange(ctx, req)
+	}
+	return r.HandleForNamespaceClassChange(ctx, req)
+}
 
-	// TODO(user): your logic here
-
+func (r *NamespaceClassReconciler) HandleForNamespaceClassChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	return ctrl.Result{}, nil
+}
+
+func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var namespace corev1.Namespace
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: req.Namespace}, &namespace); err != nil {
+		logger.Error(err, "unable to fetch Namespace")
+		return ctrl.Result{}, err
+	}
+
+	namespaceClassName, ok := namespace.Labels[NamespaceClassLabel]
+	if !ok { // Namespace has removed the label, delete the networking resource
+		var networking akuityiov1.Networking
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
+			logger.Error(err, "unable to fetch Networking")
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			logger.Error(err, "unable to delete Networking")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if namespaceClassName != req.Name { // Namespace has changed the label, delete previous networking resource if exists, create new networking resource
+		var networking akuityiov1.Networking
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
+			logger.Error(err, "unable to fetch Networking")
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			logger.Error(err, "unable to delete Networking")
+			return ctrl.Result{}, err
+		}
+
+		var namespaceClass akuityiov1.NamespaceClass
+		if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
+			logger.Error(err, "unable to fetch NamespaceClass")
+			return ctrl.Result{}, err
+		}
+
+		networking = akuityiov1.Networking{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      req.Name,
+				Namespace: req.Namespace,
+			},
+			Spec: *namespaceClass.Spec.Networking.DeepCopy(),
+		}
+		if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
+			logger.Error(err, "unable to set controller reference")
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Create(ctx, &networking); err != nil {
+			logger.Error(err, "unable to create Networking")
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	// Namespace has not changed the label, update the networking resource if exists
+	{
+		var networking akuityiov1.Networking
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
+			logger.Error(err, "unable to fetch Networking")
+			return ctrl.Result{}, err
+		}
+		var namespaceClass akuityiov1.NamespaceClass
+		if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
+			logger.Error(err, "unable to fetch NamespaceClass")
+			return ctrl.Result{}, err
+		}
+		networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
+		if err := r.Client.Update(ctx, &networking); err != nil {
+			logger.Error(err, "unable to update Networking")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &akuityiov1.Networking{}, NamespaceClassOwnerKey, func(rawObj client.Object) []string {
 		// grab the Networking object, extract the owner...
-		job := rawObj.(*akuityiov1.Networking)
-		owner := metav1.GetControllerOf(job)
+		networking := rawObj.(*akuityiov1.Networking)
+		owner := metav1.GetControllerOf(networking)
 		if owner == nil {
 			return nil
 		}

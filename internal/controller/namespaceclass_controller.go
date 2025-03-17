@@ -62,6 +62,61 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func (r *NamespaceClassReconciler) HandleForNamespaceClassChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var namespaceClass akuityiov1.NamespaceClass
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
+		logger.Error(err, "unable to fetch NamespaceClass")
+		return ctrl.Result{}, err
+	}
+
+	var namespaceList corev1.NamespaceList
+	if err := r.Client.List(ctx, &namespaceList, client.MatchingLabels{NamespaceClassLabel: req.Name}); err != nil {
+		logger.Error(err, "unable to list Namespaces")
+		return ctrl.Result{}, err
+	}
+	var networkingList akuityiov1.NetworkingList
+	if err := r.Client.List(ctx, &networkingList, client.MatchingFields{NamespaceClassOwnerKey: req.Name}); err != nil {
+		logger.Error(err, "unable to list Networking")
+		return ctrl.Result{}, err
+	}
+
+	networkingMap := make(map[string]*akuityiov1.Networking, len(networkingList.Items))
+	for _, networking := range networkingList.Items {
+		networkingMap[networking.Namespace] = &networking
+	}
+
+	{ // handle namespace update
+		for _, networking := range networkingList.Items {
+			networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
+			if err := r.Client.Update(ctx, &networking); err != nil {
+				logger.Error(err, "unable to update Networking")
+			}
+		}
+	}
+
+	{ // handle namespace creation
+		for _, namespace := range namespaceList.Items {
+			if _, ok := networkingMap[namespace.Name]; ok {
+				continue
+			}
+			networking := akuityiov1.Networking{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      namespaceClass.Name,
+					Namespace: namespace.Namespace,
+				},
+				Spec: *namespaceClass.Spec.Networking.DeepCopy(),
+			}
+			if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
+				logger.Error(err, "unable to set controller reference")
+				return ctrl.Result{}, err
+			}
+			if err := r.Client.Create(ctx, &networking); err != nil {
+				logger.Error(err, "unable to create Networking")
+			}
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 

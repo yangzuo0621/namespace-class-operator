@@ -44,29 +44,6 @@ var (
 // NamespaceClassLabel is the label used to identify the namespace class that namespace resource refers to.
 const NamespaceClassLabel = "namespaceclass.akuity.io/name"
 
-var NamespacePredicate = predicate.Funcs{
-	CreateFunc: func(e event.CreateEvent) bool {
-		namespace, isNamespaceObject := e.Object.(*corev1.Namespace)
-		if !isNamespaceObject {
-			return false
-		}
-		_, ok := namespace.Labels[NamespaceClassLabel]
-		return ok
-	},
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		oldNamespace, _ := e.ObjectOld.(*corev1.Namespace)
-		newNamespace, _ := e.ObjectNew.(*corev1.Namespace)
-
-		_, oldOk := oldNamespace.Labels[NamespaceClassLabel]
-		_, newOk := newNamespace.Labels[NamespaceClassLabel]
-
-		return oldOk || newOk
-	},
-	DeleteFunc: func(e event.DeleteEvent) bool {
-		return false
-	},
-}
-
 // NamespaceClassReconciler reconciles a NamespaceClass object
 type NamespaceClassReconciler struct {
 	client.Client
@@ -286,6 +263,8 @@ func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// watchNamespaceResource watches the namespace resource with the given namespace class label
+// and returns the reconcile requests for the namespace class resource.
 func (r *NamespaceClassReconciler) watchNamespaceResource(_ context.Context, a client.Object) []reconcile.Request {
 	namespace, isNamespaceObject := a.(*corev1.Namespace)
 	if !isNamespaceObject {
@@ -301,4 +280,28 @@ func (r *NamespaceClassReconciler) watchNamespaceResource(_ context.Context, a c
 			Namespace: namespace.Name,
 		},
 	}}
+}
+
+// NamespacePredicate is the predicate used to filter the namespace resource with the given namespace class label.
+var NamespacePredicate = predicate.Funcs{
+	CreateFunc: func(e event.CreateEvent) bool {
+		namespace, isNamespaceObject := e.Object.(*corev1.Namespace)
+		if !isNamespaceObject {
+			return false
+		}
+		_, ok := namespace.Labels[NamespaceClassLabel]
+		return ok
+	},
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		oldNamespace, _ := e.ObjectOld.(*corev1.Namespace)
+		newNamespace, _ := e.ObjectNew.(*corev1.Namespace)
+
+		_, oldOk := oldNamespace.Labels[NamespaceClassLabel]
+		_, newOk := newNamespace.Labels[NamespaceClassLabel]
+
+		return oldOk || newOk
+	},
+	DeleteFunc: func(e event.DeleteEvent) bool {
+		return false
+	},
 }

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -96,35 +97,43 @@ func (r *NamespaceClassReconciler) HandleForNamespaceClassChange(ctx context.Con
 		networkingMap[networking.Namespace] = &networking
 	}
 
-	{ // handle namespace creation
-		for _, namespace := range namespaceList.Items {
-			networking, ok := networkingMap[namespace.Name]
-			if ok {
-				networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
-				if err := r.Client.Update(ctx, networking); err != nil {
-					logger.Error(err, "unable to update Networking")
-				}
-			} else {
-				networking := akuityiov1.Networking{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      namespaceClass.Name,
-						Namespace: namespace.Name,
-					},
-					Spec: *namespaceClass.Spec.Networking.DeepCopy(),
-				}
-				if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
-					logger.Error(err, "unable to set controller reference")
-					continue
-				}
-				if err := r.Client.Create(ctx, &networking); err != nil {
-					logger.Error(err, "unable to create Networking")
-					continue
-				}
+	// update networking resources with the latest networking spec
+	for _, networking := range networkingList.Items {
+		networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
+		if err := r.Client.Update(ctx, &networking); err != nil {
+			logger.Error(err, "unable to update Networking")
+		}
+	}
+
+	// create networking resources for the namespaces that do not have networking resources
+	for _, namespace := range namespaceList.Items {
+		if _, ok := networkingMap[namespace.Name]; !ok {
+			// for this namespace, the networking resource does not exist
+			// so create the networking resource
+			if err := r.createNetworking(ctx, &namespace, &namespaceClass); err != nil {
+				logger.Error(err, "unable to create Networking")
 			}
 		}
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *NamespaceClassReconciler) createNetworking(ctx context.Context, namespace *corev1.Namespace, namespaceClass *akuityiov1.NamespaceClass) error {
+	networking := akuityiov1.Networking{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      namespaceClass.Name,
+			Namespace: namespace.Name,
+		},
+		Spec: *namespaceClass.Spec.Networking.DeepCopy(),
+	}
+	if err := ctrl.SetControllerReference(namespaceClass, &networking, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	if err := r.Client.Create(ctx, &networking); err != nil {
+		return fmt.Errorf("failed to create Networking: %w", err)
+	}
+	return nil
 }
 
 func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -143,31 +152,25 @@ func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context,
 
 	namespaceClassName, ok := namespace.Labels[NamespaceClassLabel]
 	if !ok {
-		logger.Info("namespace has removed the label")
 		// Namespace has removed the label, delete the networking resource if exists
-		var networking akuityiov1.Networking
-		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
-			logger.Error(err, "unable to fetch Networking")
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+		logger.Info("namespace has removed the label")
+
+		if err := r.deleteNetworking(ctx, req.Name, req.Namespace); err != nil {
 			logger.Error(err, "unable to delete Networking")
 			return ctrl.Result{}, err
 		}
+
 		return ctrl.Result{}, nil
 	}
 
 	if namespaceClassName != req.Name {
 		logger.Info("namespace has changed the label")
 		// Namespace has changed the label, delete previous networking resource if exists, create new networking resource
-		var networking akuityiov1.Networking
-		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
-			logger.Error(err, "unable to fetch Networking")
-			// return ctrl.Result{}, err
-		}
-		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+
+		if err := r.deleteNetworking(ctx, req.Name, req.Namespace); err != nil {
+			// for this scenario, we simply try to delete the networking resource
+			// if it fails, we log the error and continue
 			logger.Error(err, "unable to delete Networking")
-			// return ctrl.Result{}, err
 		}
 
 		var namespaceClass akuityiov1.NamespaceClass
@@ -176,28 +179,17 @@ func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context,
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 
-		networking = akuityiov1.Networking{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      namespaceClassName,
-				Namespace: req.Namespace,
-			},
-			Spec: *namespaceClass.Spec.Networking.DeepCopy(),
-		}
-		if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
-			logger.Error(err, "unable to set controller reference")
-			return ctrl.Result{}, err
-		}
-		if err := r.Client.Create(ctx, &networking); err != nil {
+		if err := r.createNetworking(ctx, &namespace, &namespaceClass); err != nil {
 			logger.Error(err, "unable to create Networking")
 			return ctrl.Result{}, err
 		}
-
 		return ctrl.Result{}, nil
 	}
 
 	{
 		// namespaceClassName == req.Name
-		// Namespace has not changed the label, update the networking resource if exists
+		// Namespace has not changed the label, create networking resource if not exists
+		// This is the case where the namespace has the label and it matches the namespace class name
 
 		logger.Info("namespace matches")
 
@@ -214,19 +206,8 @@ func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context,
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
 
-			networking = akuityiov1.Networking{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      namespaceClassName,
-					Namespace: req.Namespace,
-				},
-				Spec: *namespaceClass.Spec.Networking.DeepCopy(),
-			}
-			if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
-				logger.Error(err, "unable to set controller reference")
-				return ctrl.Result{}, err
-			}
-			if err := r.Client.Create(ctx, &networking); err != nil {
-				logger.Error(err, "unable to create networking")
+			if err := r.createNetworking(ctx, &namespace, &namespaceClass); err != nil {
+				logger.Error(err, "unable to create Networking")
 				return ctrl.Result{}, err
 			}
 
@@ -235,6 +216,17 @@ func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context,
 
 		return ctrl.Result{}, err
 	}
+}
+
+func (r *NamespaceClassReconciler) deleteNetworking(ctx context.Context, name string, namespace string) error {
+	var networking akuityiov1.Networking
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &networking); err != nil {
+		return fmt.Errorf("failed to fetch Networking: %w", err)
+	}
+	if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+		return fmt.Errorf("failed to delete Networking: %w", err)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -259,6 +251,7 @@ func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&akuityiov1.NamespaceClass{}).
 		Named("namespaceclass").
+		Owns(&akuityiov1.Networking{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.watchNamespaceResource), builder.WithPredicates(NamespacePredicate)).
 		Complete(r)
 }

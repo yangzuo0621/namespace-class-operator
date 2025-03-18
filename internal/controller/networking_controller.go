@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,17 +49,86 @@ type NetworkingReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
 func (r *NetworkingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var networking akuityiov1.Networking
+	if err := r.Get(ctx, req.NamespacedName, &networking); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	var networkPolicyList networkingv1.NetworkPolicyList
+	if err := r.List(ctx, &networkPolicyList, client.MatchingFields{NamespaceClassOwnerKey: req.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	expected := make(map[string]*akuityiov1.NetworkingPolicy, len(networking.Spec.NetworkPolicies))
+	for _, p := range networking.Spec.NetworkPolicies {
+		expected[p.Name] = &p
+	}
+	actual := make(map[string]*networkingv1.NetworkPolicy, len(networkPolicyList.Items))
+	for _, p := range networkPolicyList.Items {
+		actual[p.Name] = &p
+	}
+
+	for name, policy := range expected {
+		networkPolicy, ok := actual[name]
+		if ok {
+			networkPolicy.Spec = *policy.Spec.DeepCopy()
+			if err := r.Update(ctx, networkPolicy); err != nil {
+				logger.Error(err, "update network policy failed")
+			}
+		} else {
+			networkPolicy := networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: req.Namespace,
+				},
+				Spec: *policy.Spec.DeepCopy(),
+			}
+			if err := ctrl.SetControllerReference(&networking, &networkPolicy, r.Scheme); err != nil {
+				logger.Error(err, "set controller reference failed")
+				continue
+			}
+			if err := r.Create(ctx, &networkPolicy); err != nil {
+				logger.Error(err, "create network policy failed")
+			}
+		}
+	}
+
+	for name, policy := range actual {
+		if _, ok := expected[name]; ok {
+			continue
+		}
+
+		if err := r.Delete(ctx, policy, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			logger.Error(err, "delete network policy failed")
+		}
+	}
 
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NetworkingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &networkingv1.NetworkPolicy{}, NamespaceClassOwnerKey, func(rawObj client.Object) []string {
+		// grab the NetworkPolicy object, extract the owner...
+		networkPolicy := rawObj.(*networkingv1.NetworkPolicy)
+		owner := metav1.GetControllerOf(networkPolicy)
+		if owner == nil {
+			return nil
+		}
+		if owner.APIVersion != ApiGVStr || owner.Kind != "Networking" {
+			return nil
+		}
+
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&akuityiov1.Networking{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("networking").
 		Complete(r)
 }

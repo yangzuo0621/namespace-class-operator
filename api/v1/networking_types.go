@@ -17,7 +17,7 @@ limitations under the License.
 package v1
 
 import (
-	networkv1 "k8s.io/api/networking/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -33,8 +33,8 @@ type NetworkingSpec struct {
 }
 
 type NetworkingPolicy struct {
-	Name string                      `json:"name"`
-	Spec networkv1.NetworkPolicySpec `json:"spec"`
+	Name string                         `json:"name"`
+	Spec networkingv1.NetworkPolicySpec `json:"spec"`
 }
 
 // NetworkingStatus defines the observed state of Networking.

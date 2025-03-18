@@ -20,6 +20,7 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,197 +35,6 @@ import (
 
 	akuityiov1 "akuity.io/namespaceclass/api/v1"
 )
-
-// NamespaceClassReconciler reconciles a NamespaceClass object
-type NamespaceClassReconciler struct {
-	client.Client
-	Scheme *runtime.Scheme
-}
-
-// +kubebuilder:rbac:groups=akuity.io,resources=namespaceclasses,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=akuity.io,resources=namespaceclasses/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=akuity.io,resources=namespaceclasses/finalizers,verbs=update
-
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the NamespaceClass object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
-func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	if req.Namespace != "" {
-		return r.HandleForNamespaceChange(ctx, req)
-	}
-	return r.HandleForNamespaceClassChange(ctx, req)
-}
-
-func (r *NamespaceClassReconciler) HandleForNamespaceClassChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	var namespaceClass akuityiov1.NamespaceClass
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
-		logger.Error(err, "unable to fetch NamespaceClass")
-		return ctrl.Result{}, err
-	}
-
-	var namespaceList corev1.NamespaceList
-	if err := r.Client.List(ctx, &namespaceList, client.MatchingLabels{NamespaceClassLabel: req.Name}); err != nil {
-		logger.Error(err, "unable to list Namespaces")
-		return ctrl.Result{}, err
-	}
-	var networkingList akuityiov1.NetworkingList
-	if err := r.Client.List(ctx, &networkingList, client.MatchingFields{NamespaceClassOwnerKey: req.Name}); err != nil {
-		logger.Error(err, "unable to list Networking")
-		return ctrl.Result{}, err
-	}
-
-	networkingMap := make(map[string]*akuityiov1.Networking, len(networkingList.Items))
-	for _, networking := range networkingList.Items {
-		networkingMap[networking.Namespace] = &networking
-	}
-
-	{ // handle namespace update
-		for _, networking := range networkingList.Items {
-			networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
-			if err := r.Client.Update(ctx, &networking); err != nil {
-				logger.Error(err, "unable to update Networking")
-			}
-		}
-	}
-
-	{ // handle namespace creation
-		for _, namespace := range namespaceList.Items {
-			if _, ok := networkingMap[namespace.Name]; ok {
-				continue
-			}
-			networking := akuityiov1.Networking{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      namespaceClass.Name,
-					Namespace: namespace.Namespace,
-				},
-				Spec: *namespaceClass.Spec.Networking.DeepCopy(),
-			}
-			if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
-				logger.Error(err, "unable to set controller reference")
-				return ctrl.Result{}, err
-			}
-			if err := r.Client.Create(ctx, &networking); err != nil {
-				logger.Error(err, "unable to create Networking")
-			}
-		}
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	var namespace corev1.Namespace
-	if err := r.Client.Get(ctx, client.ObjectKey{Name: req.Namespace}, &namespace); err != nil {
-		logger.Error(err, "unable to fetch Namespace")
-		return ctrl.Result{}, err
-	}
-
-	namespaceClassName, ok := namespace.Labels[NamespaceClassLabel]
-	if !ok { // Namespace has removed the label, delete the networking resource
-		var networking akuityiov1.Networking
-		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
-			logger.Error(err, "unable to fetch Networking")
-			return ctrl.Result{}, err
-		}
-		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
-			logger.Error(err, "unable to delete Networking")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	if namespaceClassName != req.Name { // Namespace has changed the label, delete previous networking resource if exists, create new networking resource
-		var networking akuityiov1.Networking
-		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
-			logger.Error(err, "unable to fetch Networking")
-			return ctrl.Result{}, err
-		}
-		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
-			logger.Error(err, "unable to delete Networking")
-			return ctrl.Result{}, err
-		}
-
-		var namespaceClass akuityiov1.NamespaceClass
-		if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
-			logger.Error(err, "unable to fetch NamespaceClass")
-			return ctrl.Result{}, err
-		}
-
-		networking = akuityiov1.Networking{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      req.Name,
-				Namespace: req.Namespace,
-			},
-			Spec: *namespaceClass.Spec.Networking.DeepCopy(),
-		}
-		if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
-			logger.Error(err, "unable to set controller reference")
-			return ctrl.Result{}, err
-		}
-		if err := r.Client.Create(ctx, &networking); err != nil {
-			logger.Error(err, "unable to create Networking")
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{}, nil
-	}
-
-	// Namespace has not changed the label, update the networking resource if exists
-	{
-		var networking akuityiov1.Networking
-		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
-			logger.Error(err, "unable to fetch Networking")
-			return ctrl.Result{}, err
-		}
-		var namespaceClass akuityiov1.NamespaceClass
-		if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
-			logger.Error(err, "unable to fetch NamespaceClass")
-			return ctrl.Result{}, err
-		}
-		networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
-		if err := r.Client.Update(ctx, &networking); err != nil {
-			logger.Error(err, "unable to update Networking")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &akuityiov1.Networking{}, NamespaceClassOwnerKey, func(rawObj client.Object) []string {
-		// grab the Networking object, extract the owner...
-		networking := rawObj.(*akuityiov1.Networking)
-		owner := metav1.GetControllerOf(networking)
-		if owner == nil {
-			return nil
-		}
-		// ...make sure it's a Networking...
-		if owner.APIVersion != ApiGVStr || owner.Kind != "Networking" {
-			return nil
-		}
-
-		return []string{owner.Name}
-	}); err != nil {
-		return err
-	}
-
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&akuityiov1.NamespaceClass{}).
-		Named("namespaceclass").
-		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.watchNamespaceResource), builder.WithPredicates(NamespacePredicate)).
-		Complete(r)
-}
 
 var (
 	NamespaceClassOwnerKey = ".metadata.controller"
@@ -257,6 +67,225 @@ var NamespacePredicate = predicate.Funcs{
 	},
 }
 
+// NamespaceClassReconciler reconciles a NamespaceClass object
+type NamespaceClassReconciler struct {
+	client.Client
+	Scheme *runtime.Scheme
+}
+
+// +kubebuilder:rbac:groups=akuity.io,resources=namespaceclasses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=akuity.io,resources=namespaceclasses/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=akuity.io,resources=namespaceclasses/finalizers,verbs=update
+
+// Reconcile is part of the main kubernetes reconciliation loop which aims to
+// move the current state of the cluster closer to the desired state.
+// TODO(user): Modify the Reconcile function to compare the state specified by
+// the NamespaceClass object against the actual cluster state, and then
+// perform operations to make the cluster state reflect the state specified by
+// the user.
+//
+// For more details, check Reconcile and its Result here:
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.2/pkg/reconcile
+func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if req.Namespace != "" {
+		return r.HandleForNamespaceChange(ctx, req)
+	}
+	return r.HandleForNamespaceClassChange(ctx, req)
+}
+
+func (r *NamespaceClassReconciler) HandleForNamespaceClassChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx).WithValues("action", "HandleForNamespaceClassChange")
+
+	var namespaceClass akuityiov1.NamespaceClass
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: req.Name}, &namespaceClass); err != nil {
+		logger.Error(err, "unable to fetch NamespaceClass")
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	var namespaceList corev1.NamespaceList
+	if err := r.Client.List(ctx, &namespaceList, client.MatchingLabels{NamespaceClassLabel: req.Name}); err != nil {
+		logger.Error(err, "unable to list Namespaces")
+		return ctrl.Result{}, err
+	}
+
+	var networkingList akuityiov1.NetworkingList
+	if err := r.Client.List(ctx, &networkingList, client.MatchingFields{NamespaceClassOwnerKey: req.Name}); err != nil {
+		logger.Error(err, "unable to list Networking")
+		return ctrl.Result{}, err
+	}
+
+	networkingMap := make(map[string]*akuityiov1.Networking, len(networkingList.Items))
+	for _, networking := range networkingList.Items {
+		networkingMap[networking.Namespace] = &networking
+	}
+
+	{ // handle namespace creation
+		for _, namespace := range namespaceList.Items {
+			networking, ok := networkingMap[namespace.Name]
+			if ok {
+				networking.Spec = *namespaceClass.Spec.Networking.DeepCopy()
+				if err := r.Client.Update(ctx, networking); err != nil {
+					logger.Error(err, "unable to update Networking")
+				}
+			} else {
+				networking := akuityiov1.Networking{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      namespaceClass.Name,
+						Namespace: namespace.Name,
+					},
+					Spec: *namespaceClass.Spec.Networking.DeepCopy(),
+				}
+				if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
+					logger.Error(err, "unable to set controller reference")
+					continue
+				}
+				if err := r.Client.Create(ctx, &networking); err != nil {
+					logger.Error(err, "unable to create Networking")
+					continue
+				}
+			}
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx).WithValues("action", "HandleForNamespaceChange")
+
+	var namespace corev1.Namespace
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: req.Namespace}, &namespace); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if namespace.Status.Phase == corev1.NamespaceTerminating {
+		// Namespace is terminating, do nothing
+		logger.Info("namespace is terminating")
+		return ctrl.Result{}, nil
+	}
+
+	namespaceClassName, ok := namespace.Labels[NamespaceClassLabel]
+	if !ok {
+		logger.Info("namespace has removed the label")
+		// Namespace has removed the label, delete the networking resource if exists
+		var networking akuityiov1.Networking
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
+			logger.Error(err, "unable to fetch Networking")
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			logger.Error(err, "unable to delete Networking")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if namespaceClassName != req.Name {
+		logger.Info("namespace has changed the label")
+		// Namespace has changed the label, delete previous networking resource if exists, create new networking resource
+		var networking akuityiov1.Networking
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking); err != nil {
+			logger.Error(err, "unable to fetch Networking")
+			// return ctrl.Result{}, err
+		}
+		if err := r.Client.Delete(ctx, &networking, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			logger.Error(err, "unable to delete Networking")
+			// return ctrl.Result{}, err
+		}
+
+		var namespaceClass akuityiov1.NamespaceClass
+		if err := r.Client.Get(ctx, client.ObjectKey{Name: namespaceClassName}, &namespaceClass); err != nil {
+			logger.Error(err, "unable to fetch NamespaceClass")
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+
+		networking = akuityiov1.Networking{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      namespaceClassName,
+				Namespace: req.Namespace,
+			},
+			Spec: *namespaceClass.Spec.Networking.DeepCopy(),
+		}
+		if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
+			logger.Error(err, "unable to set controller reference")
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Create(ctx, &networking); err != nil {
+			logger.Error(err, "unable to create Networking")
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	{
+		// namespaceClassName == req.Name
+		// Namespace has not changed the label, update the networking resource if exists
+
+		logger.Info("namespace matches")
+
+		var networking akuityiov1.Networking
+		err := r.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &networking)
+		if err == nil {
+			return ctrl.Result{}, nil
+		}
+
+		if apierrors.IsNotFound(err) {
+			var namespaceClass akuityiov1.NamespaceClass
+			if err := r.Client.Get(ctx, client.ObjectKey{Name: req.Name}, &namespaceClass); err != nil {
+				logger.Error(err, "unable to fetch NamespaceClass")
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+
+			networking = akuityiov1.Networking{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      namespaceClassName,
+					Namespace: req.Namespace,
+				},
+				Spec: *namespaceClass.Spec.Networking.DeepCopy(),
+			}
+			if err := ctrl.SetControllerReference(&namespaceClass, &networking, r.Scheme); err != nil {
+				logger.Error(err, "unable to set controller reference")
+				return ctrl.Result{}, err
+			}
+			if err := r.Client.Create(ctx, &networking); err != nil {
+				logger.Error(err, "unable to create networking")
+				return ctrl.Result{}, err
+			}
+
+			return ctrl.Result{}, nil
+		}
+
+		return ctrl.Result{}, err
+	}
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &akuityiov1.Networking{}, NamespaceClassOwnerKey, func(rawObj client.Object) []string {
+		// grab the Networking object, extract the owner...
+		networking := rawObj.(*akuityiov1.Networking)
+		owner := metav1.GetControllerOf(networking)
+		if owner == nil {
+			return nil
+		}
+		// ...make sure it's a NamespaceClass...
+		if owner.APIVersion != ApiGVStr || owner.Kind != "NamespaceClass" {
+			return nil
+		}
+
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&akuityiov1.NamespaceClass{}).
+		Named("namespaceclass").
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.watchNamespaceResource), builder.WithPredicates(NamespacePredicate)).
+		Complete(r)
+}
+
 func (r *NamespaceClassReconciler) watchNamespaceResource(_ context.Context, a client.Object) []reconcile.Request {
 	namespace, isNamespaceObject := a.(*corev1.Namespace)
 	if !isNamespaceObject {
@@ -269,7 +298,7 @@ func (r *NamespaceClassReconciler) watchNamespaceResource(_ context.Context, a c
 	return []reconcile.Request{{
 		NamespacedName: types.NamespacedName{
 			Name:      namespaceClass,
-			Namespace: namespace.Namespace,
+			Namespace: namespace.Name,
 		},
 	}}
 }

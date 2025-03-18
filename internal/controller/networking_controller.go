@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,42 +71,53 @@ func (r *NetworkingReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		actual[p.Name] = &p
 	}
 
+	// update or create network policies
 	for name, policy := range expected {
-		networkPolicy, ok := actual[name]
-		if ok {
+		if networkPolicy, ok := actual[name]; ok {
 			networkPolicy.Spec = *policy.Spec.DeepCopy()
 			if err := r.Update(ctx, networkPolicy); err != nil {
 				logger.Error(err, "update network policy failed")
 			}
 		} else {
-			networkPolicy := networkingv1.NetworkPolicy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      name,
-					Namespace: req.Namespace,
-				},
-				Spec: *policy.Spec.DeepCopy(),
-			}
-			if err := ctrl.SetControllerReference(&networking, &networkPolicy, r.Scheme); err != nil {
-				logger.Error(err, "set controller reference failed")
-				continue
-			}
-			if err := r.Create(ctx, &networkPolicy); err != nil {
+			if err := r.createNetworkPolicy(ctx, &networking, req.Namespace, policy); err != nil {
 				logger.Error(err, "create network policy failed")
 			}
 		}
 	}
 
+	// delete network policies
 	for name, policy := range actual {
 		if _, ok := expected[name]; ok {
 			continue
 		}
 
-		if err := r.Delete(ctx, policy, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+		err := r.Delete(ctx, policy, client.PropagationPolicy(metav1.DeletePropagationBackground))
+		if err != nil {
 			logger.Error(err, "delete network policy failed")
 		}
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *NetworkingReconciler) createNetworkPolicy(ctx context.Context, owner *akuityiov1.Networking, namespace string, networkPolicy *akuityiov1.NetworkingPolicy) error {
+	object := networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkPolicy.Name,
+			Namespace: namespace,
+		},
+		Spec: *networkPolicy.Spec.DeepCopy(),
+	}
+	err := ctrl.SetControllerReference(owner, &object, r.Scheme)
+	if err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	err = r.Create(ctx, &object)
+	if err != nil {
+		return fmt.Errorf("failed to create network policy: %w", err)
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

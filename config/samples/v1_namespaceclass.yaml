@@ -4,15 +4,34 @@ metadata:
   labels:
     app.kubernetes.io/name: namespace-class-operator
     app.kubernetes.io/managed-by: kustomize
-  name: namespaceclass-sample
+  name: internal-network
 spec:
   networking:
     networkpolicies:
-    - name: test-network-policy
+    - name: database
       spec:
         podSelector:
           matchLabels:
-            role: db
+            role: database
+        policyTypes:
+        - Ingress
+        - Egress
+---
+apiVersion: akuity.io/v1
+kind: NamespaceClass
+metadata:
+  labels:
+    app.kubernetes.io/name: namespace-class-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: public-network
+spec:
+  networking:
+    networkpolicies:
+    - name: frontend
+      spec:
+        podSelector:
+          matchLabels:
+            role: frontend
         policyTypes:
         - Ingress
         - Egress

@@ -12,6 +12,27 @@
 - kubectl version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
 
+### To Run Controller Locally
+
+Generate certificates for serving the webhooks, and place them in the directory by default: `/tmp/k8s-webhook-server/serving-certs/tls.{crt,key}`.
+
+```bash
+make run
+```
+
+Or run it without webhook:
+
+```bash
+export ENABLE_WEBHOOKS=false
+make run
+```
+
+### To Run E2E Test
+
+```bash
+go test ./test/e2e -v
+```
+
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
 

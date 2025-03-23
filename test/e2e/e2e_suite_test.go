@@ -37,6 +37,7 @@ func TestMain(m *testing.M) {
 		// envfuncs.CreateCluster(kind.NewProvider().WithOpts(kind.WithImage("kindest/node:v1.31.2")), kindClusterName),
 		envfuncs.CreateCluster(kind.NewProvider(), kindClusterName),
 		envfuncs.CreateNamespace(namespace),
+		InstallCertManager(),
 		InstallManager(kindClusterName),
 	)
 
@@ -50,36 +51,47 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
+func InstallCertManager() env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		e2eLog.Info("installing cert manager")
+		if err := utils.InstallCertManager(); err != nil {
+
+			return ctx, fmt.Errorf("failed to install cert manager: %w", err)
+		}
+		return ctx, nil
+	}
+}
+
 func InstallManager(kindClusterName string) env.Func {
 	projectImage := "example.com/namespace-class-operator:v0.0.1"
 
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		// build docker image
 		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-		e2eLog.Info("building image", "cmd", cmd)
+		e2eLog.Info("building the manager(Operator) image", "cmd", cmd)
 		if _, err := utils.Run(cmd); err != nil {
-			return ctx, fmt.Errorf("install manager func: %w", err)
+			return ctx, fmt.Errorf("Failed to build the manager(Operator) image: %w", err)
 		}
 
 		// load image to kind cluster
-		e2eLog.Info("loading image to kind cluster", "image", projectImage)
+		e2eLog.Info("loading the manager(Operator) image into Kind", "image", projectImage)
 		os.Setenv("KIND_CLUSTER", kindClusterName)
 		if err := utils.LoadImageToKindClusterWithName(projectImage); err != nil {
-			return ctx, fmt.Errorf("install manager func: %w", err)
+			return ctx, fmt.Errorf("Failed to load the manager(Operator) image into Kind: %w", err)
 		}
 
 		// install namespace class crds
 		cmd = exec.Command("make", "install")
-		e2eLog.Info("installing manager", "cmd", cmd)
+		e2eLog.Info("installing CRDs", "cmd", cmd)
 		if _, err := utils.Run(cmd); err != nil {
-			return ctx, fmt.Errorf("install manager func: %w", err)
+			return ctx, fmt.Errorf("Failed to install CRDs: %w", err)
 		}
 
 		// deploy manager
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
-		e2eLog.Info("deploying manager", "cmd", cmd)
+		e2eLog.Info("deploying the controller-manager", "cmd", cmd)
 		if _, err := utils.Run(cmd); err != nil {
-			return ctx, fmt.Errorf("install manager func: %w", err)
+			return ctx, fmt.Errorf("Failed to deploy the controller-manager: %w", err)
 		}
 
 		e2eLog.Info("manager installed")
@@ -87,10 +99,9 @@ func InstallManager(kindClusterName string) env.Func {
 		// create resources and add to api scheme
 		r, err := resources.New(cfg.Client().RESTConfig())
 		if err != nil {
-			return ctx, fmt.Errorf("install manager func: %w", err)
+			return ctx, fmt.Errorf("Failed to add scheme resource: %w", err)
 		}
 		akuityiov1.AddToScheme(r.GetScheme())
-
 		return context.WithValue(ctx, NamespaceClassResources, r), nil
 	}
 }

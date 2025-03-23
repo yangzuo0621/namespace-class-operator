@@ -65,6 +65,9 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var healthzCheck = healthz.Ping
+	var readyzCheck = healthz.Ping
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -227,6 +230,8 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Networking")
 			os.Exit(1)
 		}
+		healthzCheck = webhookakuityiov1.HealthzCheck(webhook.Options{TLSOpts: webhookTLSOpts})
+		readyzCheck = webhookakuityiov1.ReadyzCheck(webhook.Options{TLSOpts: webhookTLSOpts})
 	}
 
 	if metricsCertWatcher != nil {
@@ -245,11 +250,11 @@ func main() {
 		}
 	}
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+	if err := mgr.AddHealthzCheck("healthz", healthzCheck); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", readyzCheck); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}

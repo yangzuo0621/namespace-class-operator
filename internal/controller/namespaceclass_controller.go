@@ -201,6 +201,9 @@ func (r *NamespaceClassReconciler) HandleForNamespaceChange(ctx context.Context,
 		}
 
 		if apierrors.IsNotFound(err) {
+			// networking resource does not exist,
+			// means the namespace has the label but networking resource is not created yet
+
 			var namespaceClass akuityiov1.NamespaceClass
 			if err := r.Client.Get(ctx, client.ObjectKey{Name: req.Name}, &namespaceClass); err != nil {
 				logger.Error(err, "unable to fetch NamespaceClass")

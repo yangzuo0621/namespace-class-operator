@@ -1,4 +1,5 @@
 resources:
+# - cert-manager.yaml # https://github.com/cert-manager/cert-manager/releases/download/v1.17.0/cert-manager.yaml
 - issuer.yaml
 - certificate-webhook.yaml
 - certificate-metrics.yaml

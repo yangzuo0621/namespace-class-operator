@@ -39,6 +39,7 @@ import (
 
 	akuityiov1 "akuity.io/namespaceclass/api/v1"
 	"akuity.io/namespaceclass/internal/controller"
+	webhookakuityiov1 "akuity.io/namespaceclass/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -215,6 +216,13 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Networking")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookakuityiov1.SetupNetworkingWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Networking")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

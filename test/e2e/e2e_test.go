@@ -9,6 +9,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/avast/retry-go"
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/klient/wait"
@@ -81,12 +82,18 @@ func TestNamespaceClass(t *testing.T) {
 	feature := features.New("NamespaceClass").
 		Assess("Create NamespaceClass", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			resource := MustGetNamespaceClassResources(ctx)
-			err := resource.Create(ctx, &publicNetworkClass)
+
+			e2eLog.Info("Creating NamespaceClass", "name", publicNetworkClass.Name)
+			// NOTE: we deliberately use retry.Do for the first NamespaceClass creation because of webhook registration delay
+			err := retry.Do(func() error { return resource.Create(ctx, &publicNetworkClass) }, retry.Delay(1*time.Second), retry.Attempts(10))
+			// err := resource.Create(ctx, &publicNetworkClass)
 			assert.NoError(t, err)
 
+			e2eLog.Info("Creating NamespaceClass", "name", privateNetworkClass.Name)
 			err = resource.Create(ctx, &privateNetworkClass)
 			assert.NoError(t, err)
 
+			e2eLog.Info("Waiting for NamespaceClassList to have 2 items")
 			var namespaceClassList akuityiov1.NamespaceClassList
 			err = wait.For(conditions.New(resource).ResourceListN(&namespaceClassList, 2), wait.WithInterval(1*time.Second), wait.WithTimeout(10*time.Second))
 			assert.NoError(t, err)
@@ -101,6 +108,7 @@ func TestNamespaceClass(t *testing.T) {
 				},
 			}
 
+			e2eLog.Info("Creating Namespace", "name", namespace.Name, "label", namespace.Labels)
 			client, err := cfg.NewClient()
 			assert.NoError(t, err)
 			err = client.Resources().Create(ctx, &namespace)
@@ -108,6 +116,7 @@ func TestNamespaceClass(t *testing.T) {
 
 			resource := MustGetNamespaceClassResources(ctx)
 
+			e2eLog.Info("Waiting for Networking to be created", "name", "public-network", "namespace", "web-portal")
 			networking := akuityiov1.Networking{ObjectMeta: metav1.ObjectMeta{Name: "public-network", Namespace: "web-portal"}}
 			err = wait.For(conditions.New(resource).ResourceMatch(&networking, func(object k8s.Object) bool {
 				obj := object.(*akuityiov1.Networking)
@@ -115,6 +124,7 @@ func TestNamespaceClass(t *testing.T) {
 			}), wait.WithInterval(1*time.Second), wait.WithTimeout(10*time.Second))
 			assert.NoError(t, err)
 
+			e2eLog.Info("Waiting for NetworkPolicy to be created", "name", "front-end", "namespace", "web-portal")
 			networkPolicy := networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "front-end", Namespace: "web-portal"}}
 			err = wait.For(conditions.New(client.Resources()).ResourceMatch(&networkPolicy, func(object k8s.Object) bool {
 				obj := object.(*networkingv1.NetworkPolicy)
@@ -223,21 +233,27 @@ func TestNamespaceClass(t *testing.T) {
 			assert.Equal(t, "back-end", namespaceClass.Spec.Networking.NetworkPolicies[0].Name)
 			assert.Equal(t, "new-policy", namespaceClass.Spec.Networking.NetworkPolicies[1].Name)
 
+			e2eLog.Info("Deleting NamespaceClass", "name", namespaceClass.Name, "labels", namespaceClass.Labels)
 			err = resource.Delete(ctx, &namespaceClass)
 			assert.NoError(t, err)
 
+			e2eLog.Info("Waiting for NamespaceClassList to be deleted", "name", namespaceClass.Name)
 			wait.For(conditions.New(resource).ResourceDeleted(&namespaceClass), wait.WithInterval(1*time.Second), wait.WithTimeout(10*time.Second))
 
+			e2eLog.Info("Waiting for Networking to be deleted", "name", "private-network", "namespace", "web-portal")
 			networking := akuityiov1.Networking{ObjectMeta: metav1.ObjectMeta{Name: "private-network", Namespace: "web-portal"}}
 			err = wait.For(conditions.New(resource).ResourceDeleted(&networking), wait.WithInterval(1*time.Second), wait.WithTimeout(10*time.Second))
 			assert.NoError(t, err)
 
 			client, err := c.NewClient()
 			assert.NoError(t, err)
+
+			e2eLog.Info("Waiting for NetworkPolicy to be deleted", "name", "back-end", "namespace", "web-portal")
 			networkPolicy := networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "back-end", Namespace: "web-portal"}}
 			err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&networkPolicy), wait.WithInterval(1*time.Second), wait.WithTimeout(10*time.Second))
 			assert.NoError(t, err)
 
+			e2eLog.Info("Waiting for NetworkPolicy to be deleted", "name", "new-policy", "namespace", "web-portal")
 			networkPolicy = networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "new-policy", Namespace: "web-portal"}}
 			err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&networkPolicy), wait.WithInterval(1*time.Second), wait.WithTimeout(10*time.Second))
 			assert.NoError(t, err)

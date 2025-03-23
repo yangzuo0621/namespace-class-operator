@@ -94,6 +94,16 @@ func InstallManager(kindClusterName string) env.Func {
 			return ctx, fmt.Errorf("Failed to deploy the controller-manager: %w", err)
 		}
 
+		cmd = exec.Command("kubectl", "wait", "deployment.apps/namespace-class-operator-controller-manager",
+			"--for", "condition=Available",
+			"--namespace", "namespace-class-operator-system",
+			"--timeout", "5m",
+		)
+		e2eLog.Info("waiting for controller-manager to be ready", "cmd", cmd)
+		if _, err := utils.Run(cmd); err != nil {
+			return ctx, fmt.Errorf("Failed to wait for controller-manager to be ready: %w", err)
+		}
+
 		e2eLog.Info("manager installed")
 
 		// create resources and add to api scheme

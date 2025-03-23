@@ -5,6 +5,7 @@ go 1.23.0
 godebug default=go1.23
 
 require (
+	github.com/avast/retry-go v3.0.0+incompatible
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
 	github.com/stretchr/testify v1.10.0

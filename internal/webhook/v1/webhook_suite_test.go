@@ -112,6 +112,9 @@ var _ = BeforeSuite(func() {
 	err = SetupNetworkingWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupNamespaceClassWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {

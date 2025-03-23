@@ -69,11 +69,7 @@ func (v *NetworkingCustomValidator) ValidateCreate(ctx context.Context, obj runt
 	}
 	networkinglog.Info("Validation for Networking upon creation", "name", networking.GetName())
 
-	if len(networking.Spec.NetworkPolicies) == 0 {
-		return nil, nil
-	}
-
-	if err := checkDuplicateNetworkPolicies(networking); err != nil {
+	if err := validateNetworking(networking); err != nil {
 		networkinglog.Error(err, "Validation failed for Networking upon creation", "name", networking.GetName())
 		return nil, err
 	}
@@ -86,15 +82,13 @@ func (v *NetworkingCustomValidator) ValidateUpdate(ctx context.Context, oldObj, 
 	if !ok {
 		return nil, fmt.Errorf("expected a Networking object for the newObj but got %T", newObj)
 	}
-	networkinglog.Info("Validation for Networking upon update", "name", networking.GetName())
 
-	if len(networking.Spec.NetworkPolicies) == 0 {
-		return nil, nil
-	}
-	if err := checkDuplicateNetworkPolicies(networking); err != nil {
+	if err := validateNetworking(networking); err != nil {
 		networkinglog.Error(err, "Validation failed for Networking upon update", "name", networking.GetName())
 		return nil, err
 	}
+
+	networkinglog.Info("Validation succeeded for Networking upon update", "name", networking.GetName())
 	return nil, nil
 }
 
@@ -104,19 +98,37 @@ func (v *NetworkingCustomValidator) ValidateDelete(ctx context.Context, obj runt
 	if !ok {
 		return nil, fmt.Errorf("expected a Networking object but got %T", obj)
 	}
-	networkinglog.Info("Validation for Networking upon deletion", "name", networking.GetName())
+	networkinglog.Info("Validation succeeded for Networking upon deletion", "name", networking.GetName())
 
 	// TODO(user): fill in your validation logic upon object deletion.
 
 	return nil, nil
 }
 
-func checkDuplicateNetworkPolicies(networking *akuityiov1.Networking) error {
-	var allErrs field.ErrorList
+func validateNetworking(networking *akuityiov1.Networking) error {
+	err := checkDuplicateNetworkPolicies(networking.Spec.NetworkPolicies, field.NewPath("spec"))
+	if err != nil {
+		return apierrors.NewInvalid(
+			schema.GroupKind{Group: "akuity.io", Kind: "Networking"},
+			networking.Name, err,
+		)
+	}
+	return nil
+}
+
+func checkDuplicateNetworkPolicies(networkPolicies []akuityiov1.NetworkingPolicy, p *field.Path) field.ErrorList {
+	if len(networkPolicies) == 0 {
+		return nil
+	}
+
 	seen := make(map[string]struct{})
-	for i, networkPolicy := range networking.Spec.NetworkPolicies {
+	var allErrs field.ErrorList
+	for i, networkPolicy := range networkPolicies {
 		if _, ok := seen[networkPolicy.Name]; ok {
-			allErrs = append(allErrs, field.Duplicate(field.NewPath("spec").Child(fmt.Sprintf("networkpolicies[%d]", i), "name"), networkPolicy.Name))
+			allErrs = append(allErrs, field.Duplicate(
+				p.Child(fmt.Sprintf("networkpolicies[%d]", i), "name"),
+				networkPolicy.Name),
+			)
 		}
 		seen[networkPolicy.Name] = struct{}{}
 	}
@@ -124,9 +136,5 @@ func checkDuplicateNetworkPolicies(networking *akuityiov1.Networking) error {
 	if len(allErrs) == 0 {
 		return nil
 	}
-
-	return apierrors.NewInvalid(
-		schema.GroupKind{Group: "akuity.io", Kind: "Networking"},
-		networking.Name, allErrs,
-	)
+	return allErrs
 }

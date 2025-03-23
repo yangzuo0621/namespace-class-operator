@@ -219,12 +219,15 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookakuityiov1.SetupNamespaceClassWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "NamespaceClass")
+			os.Exit(1)
+		}
 		if err = webhookakuityiov1.SetupNetworkingWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Networking")
 			os.Exit(1)
 		}
 	}
-	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
